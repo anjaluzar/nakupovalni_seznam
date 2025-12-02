@@ -1,0 +1,100 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  backdrop-filter: blur(2px);
+  z-index: 999;
+}
+
+/* Glavno modal okno */
+.modal {
+  background: #ffffff;
+  padding: 28px 30px 24px;
+  width: 360px;               /* širše in bolj premium */
+  border-radius: 18px;        /* mehkejši zaobljeni robovi */
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.15);
+  animation: fadeIn 0.2s ease-out;
+  text-align: center;
+}
+
+/* Naslov */
+.modal h3 {
+  margin-top: 0;
+  margin-bottom: 18px;
+  font-size: 20px;
+  font-weight: 600;
+  color: #333;
+}
+
+/* Input polje */
+.modal input {
+  display: block;
+  margin: 0 auto;
+  width: 90%;               /* enakomerna širina */
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #d5d5d5;
+  background: #fafafa;
+  font-size: 16px;
+  margin-bottom: 20px;
+  outline: none;
+  transition: 0.2s;
+}
+
+
+.modal input:focus {
+  border-color: #7ab2ff;
+  background-color: #fff;
+  box-shadow: 0 0 0 3px rgba(123, 171, 255, 0.25);
+}
+
+/* Gumbi */
+.modal-actions {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+}
+
+.modal-actions button {
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: none;
+  font-size: 15px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+/* Potrdi */
+.modal-actions button.confirm {
+  background-color: #31b44c;
+  color: white;
+}
+
+.modal-actions button.confirm:hover {
+  background-color: #2a9d42;
+}
+
+/* Prekliči */
+.modal-actions button.cancel {
+  background-color: #eeeeee;
+  color: #555;
+}
+
+.modal-actions button.cancel:hover {
+  background-color: #dedede;
+}
+
+/* Animacija */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
