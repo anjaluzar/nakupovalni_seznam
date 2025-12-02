@@ -1,0 +1,1 @@
+# nakupovalni_seznam
