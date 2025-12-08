@@ -1,8 +1,12 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+jest.mock('axios');
+import axios from 'axios';
 import App from './App';
 
-test('renders learn react link', () => {
+// Test: ob zagonu aplikacije se požene axios.get in prikaže se naslov aplikacije
+test('renders app header and fetches lists', async () => {
+  axios.get.mockResolvedValueOnce({ data: [] });
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  await waitFor(() => expect(axios.get).toHaveBeenCalled());
+  expect(screen.getByText(/🛒 Nakupovalni seznami/i)).toBeInTheDocument();
 });
