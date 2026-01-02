@@ -1,0 +1,160 @@
+name: CI-CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.x]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Cache client dependencies
+        uses: actions/cache@v4
+        with:
+          path: client/node_modules
+          key: client-node-modules-${{ hashFiles('client/package-lock.json', 'client/package.json') }}
+          restore-keys: |
+            client-node-modules-
+
+      - name: Cache server dependencies
+        uses: actions/cache@v4
+        with:
+          path: server/node_modules
+          key: server-node-modules-${{ hashFiles('server/package-lock.json', 'server/package.json') }}
+          restore-keys: |
+            server-node-modules-
+
+      - name: Install client dependencies
+        working-directory: client
+        run: |
+          npm ci
+
+      - name: Build client
+        working-directory: client
+        run: |
+          npm run build
+
+      - name: Install server dependencies
+        working-directory: server
+        run: |
+          npm ci || npm install
+
+      - name: Run server tests
+        working-directory: server
+        run: |
+          npm test
+
+      - name: Archive server for artifact
+        run: |
+          tar -czf server-artifact.tar.gz -C server .
+
+      - name: Upload client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: client_build
+          path: client/build
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server_artifact
+          path: server-artifact.tar.gz
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: build
+    outputs:
+      client_image: ${{ steps.set-images.outputs.client_image }}
+      server_image: ${{ steps.set-images.outputs.server_image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: client_build
+
+      - name: Download server artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server_artifact
+
+      - name: Prepare server files
+        run: |
+          mkdir -p server-deploy
+          tar -xzf server_artifact.tar.gz -C server-deploy
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set image names
+        id: set-images
+        run: |
+          echo "CLIENT_IMAGE=${{ secrets.DOCKER_USERNAME }}/nakupovalni-client:${{ github.sha }}" >> $GITHUB_ENV
+          echo "SERVER_IMAGE=${{ secrets.DOCKER_USERNAME }}/nakupovalni-server:${{ github.sha }}" >> $GITHUB_ENV
+          echo "client_image=${{ secrets.DOCKER_USERNAME }}/nakupovalni-client:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "server_image=${{ secrets.DOCKER_USERNAME }}/nakupovalni-server:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build client image
+        run: |
+          docker build -t "$CLIENT_IMAGE" -f client/Dockerfile client
+
+      - name: Push client image
+        run: |
+          docker push "$CLIENT_IMAGE"
+
+      - name: Verify client image on Docker Hub
+        run: |
+          docker pull "$CLIENT_IMAGE"
+          docker image ls | grep nakupovalni-client || true
+
+      - name: Build server image
+        run: |
+          docker build -t "$SERVER_IMAGE" -f server/Dockerfile server-deploy
+
+      - name: Push server image
+        run: |
+          docker push "$SERVER_IMAGE"
+
+      - name: Verify server image on Docker Hub
+        run: |
+          docker pull "$SERVER_IMAGE"
+          docker image ls | grep nakupovalni-server || true
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - name: Trigger Render deploy webhook with images
+        if: ${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}
+        env:
+          CLIENT_IMAGE: ${{ needs.docker.outputs.client_image }}
+          SERVER_IMAGE: ${{ needs.docker.outputs.server_image }}
+        run: |
+          echo "Triggering Render deploy webhook with payload"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{\"client_image\":\"${CLIENT_IMAGE}\",\"server_image\":\"${SERVER_IMAGE}\"}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          echo "Webhook status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then echo "Triggered deploy"; else echo "Failed to trigger deploy ($HTTP_STATUS)"; exit 1; fi
+
+      - name: Deploy placeholder if no webhook
+        if: ${{ secrets.RENDER_DEPLOY_HOOK_URL == '' }}
+        run: |
+          echo "No deploy webhook configured. Docker images pushed to Docker Hub:"
+          echo "${{ secrets.DOCKER_USERNAME }}/nakupovalni-client:${{ github.sha }}"
+          echo "${{ secrets.DOCKER_USERNAME }}/nakupovalni-server:${{ github.sha }}"
