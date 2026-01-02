@@ -6,66 +6,71 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  NODE_VERSION: "20"
+  CLIENT_IMAGE: nakupovalni-client
+  SERVER_IMAGE: nakupovalni-server
+
 jobs:
   build:
+    name: Build + Cache + Artifacts
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [16.x]
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Cache client dependencies
+      # ---------- CACHE ----------
+      - name: Cache client node_modules
         uses: actions/cache@v4
         with:
           path: client/node_modules
-          key: client-node-modules-${{ hashFiles('client/package-lock.json', 'client/package.json') }}
+          key: ${{ runner.os }}-client-${{ hashFiles('client/package-lock.json') }}
           restore-keys: |
-            client-node-modules-
+            ${{ runner.os }}-client-
 
-      - name: Cache server dependencies
+      - name: Cache server node_modules
         uses: actions/cache@v4
         with:
           path: server/node_modules
-          key: server-node-modules-${{ hashFiles('server/package-lock.json', 'server/package.json') }}
+          key: ${{ runner.os }}-server-${{ hashFiles('server/package-lock.json') }}
           restore-keys: |
-            server-node-modules-
+            ${{ runner.os }}-server-
 
-      - name: Install client dependencies
+      # ---------- BUILD CLIENT ----------
+      - name: Install client deps
         working-directory: client
-        run: |
-          npm ci
+        run: npm ci
 
       - name: Build client
         working-directory: client
-        run: |
-          npm run build
+        run: npm run build
 
-      - name: Install server dependencies
-        working-directory: server
-        run: |
-          npm ci || npm install
-
-      - name: Run server tests
-        working-directory: server
-        run: |
-          npm test
-
-      - name: Archive server for artifact
-        run: |
-          tar -czf server-artifact.tar.gz -C server .
-
+      # ⚠️ Če imaš Vite, je output "dist" (ne build).
+      # Zamenjaj client/build -> client/dist (tukaj in spodaj v docker jobu).
       - name: Upload client artifact
         uses: actions/upload-artifact@v4
         with:
           name: client_build
           path: client/build
+
+      # ---------- BUILD / TEST SERVER ----------
+      - name: Install server deps
+        working-directory: server
+        run: npm ci
+
+      - name: Test server
+        working-directory: server
+        run: npm test
+
+      # Naredimo tar celotnega serverja, da ga lahko uporabimo kot docker context v naslednjem jobu
+      - name: Pack server artifact
+        run: tar -czf server-artifact.tar.gz -C server .
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
@@ -74,89 +79,80 @@ jobs:
           path: server-artifact.tar.gz
 
   docker:
+    name: Docker Build + Push (Docker Hub)
     runs-on: ubuntu-latest
     needs: build
+
     outputs:
-      client_image: ${{ steps.set-images.outputs.client_image }}
-      server_image: ${{ steps.set-images.outputs.server_image }}
+      client_image: ${{ steps.meta.outputs.client_image }}
+      server_image: ${{ steps.meta.outputs.server_image }}
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download build artifacts
+      - name: Download client artifact
         uses: actions/download-artifact@v4
         with:
           name: client_build
+          path: client/build   # če imaš Vite -> client/dist
 
       - name: Download server artifact
         uses: actions/download-artifact@v4
         with:
           name: server_artifact
+          path: server_artifact
 
-      - name: Prepare server files
+      - name: Unpack server artifact
         run: |
           mkdir -p server-deploy
-          tar -xzf server_artifact.tar.gz -C server-deploy
+          ls -la server_artifact
+          tar -xzf server_artifact/server-artifact.tar.gz -C server-deploy
+          ls -la server-deploy
+
       - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Set image names
-        id: set-images
+      - name: Set image tags
+        id: meta
         run: |
-          echo "CLIENT_IMAGE=${{ secrets.DOCKER_USERNAME }}/nakupovalni-client:${{ github.sha }}" >> $GITHUB_ENV
-          echo "SERVER_IMAGE=${{ secrets.DOCKER_USERNAME }}/nakupovalni-server:${{ github.sha }}" >> $GITHUB_ENV
-          echo "client_image=${{ secrets.DOCKER_USERNAME }}/nakupovalni-client:${{ github.sha }}" >> $GITHUB_OUTPUT
-          echo "server_image=${{ secrets.DOCKER_USERNAME }}/nakupovalni-server:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "client_image=${{ secrets.DOCKER_USERNAME }}/${{ env.CLIENT_IMAGE }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "server_image=${{ secrets.DOCKER_USERNAME }}/${{ env.SERVER_IMAGE }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "CLIENT_IMAGE=${{ secrets.DOCKER_USERNAME }}/${{ env.CLIENT_IMAGE }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "SERVER_IMAGE=${{ secrets.DOCKER_USERNAME }}/${{ env.SERVER_IMAGE }}:${{ github.sha }}" >> $GITHUB_ENV
 
-      - name: Build client image
+      - name: Build & Push client image
         run: |
           docker build -t "$CLIENT_IMAGE" -f client/Dockerfile client
-
-      - name: Push client image
-        run: |
           docker push "$CLIENT_IMAGE"
 
-      - name: Verify client image on Docker Hub
-        run: |
-          docker pull "$CLIENT_IMAGE"
-          docker image ls | grep nakupovalni-client || true
-
-      - name: Build server image
+      - name: Build & Push server image
         run: |
           docker build -t "$SERVER_IMAGE" -f server/Dockerfile server-deploy
-
-      - name: Push server image
-        run: |
           docker push "$SERVER_IMAGE"
 
-      - name: Verify server image on Docker Hub
-        run: |
-          docker pull "$SERVER_IMAGE"
-          docker image ls | grep nakupovalni-server || true
-
   deploy:
+    name: Deploy (Render)
     runs-on: ubuntu-latest
     needs: docker
-    env:
-      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
     steps:
-      - name: Trigger Render deploy webhook with images
-        if: ${{ env.RENDER_DEPLOY_HOOK_URL != '' }}
+      - name: Trigger Render Deploy Hook
         env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
           CLIENT_IMAGE: ${{ needs.docker.outputs.client_image }}
           SERVER_IMAGE: ${{ needs.docker.outputs.server_image }}
         run: |
-          echo "Triggering Render deploy webhook with payload"
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{\"client_image\":\"${CLIENT_IMAGE}\",\"server_image\":\"${SERVER_IMAGE}\"}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
-          echo "Webhook status: $HTTP_STATUS"
-          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then echo "Triggered deploy"; else echo "Failed to trigger deploy ($HTTP_STATUS)"; exit 1; fi
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL ni nastavljen (GitHub Secret). Preskakujem deploy."
+            echo "Client image: $CLIENT_IMAGE"
+            echo "Server image: $SERVER_IMAGE"
+            exit 0
+          fi
 
-      - name: Deploy placeholder if no webhook
-        if: ${{ env.RENDER_DEPLOY_HOOK_URL == '' }}
-        run: |
-          echo "No deploy webhook configured. Docker images pushed to Docker Hub:"
-          echo "${{ secrets.DOCKER_USERNAME }}/nakupovalni-client:${{ github.sha }}"
-          echo "${{ secrets.DOCKER_USERNAME }}/nakupovalni-server:${{ github.sha }}"
+          echo "Sprožam Render deploy hook..."
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "OK"
