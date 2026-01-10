@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
 import AddItemForm from "./components/AddItemForm";
 import ShoppingList from "./components/ShoppingList";
@@ -13,21 +13,18 @@ export default function App() {
   const API_BASE =
     process.env.REACT_APP_API_URL || "https://nakupovalni-server.onrender.com";
 
-  // ✅ axios instance mora biti memoized, sicer ESLint CI pade
-  const api = useMemo(() => axios.create({ baseURL: API_BASE }), [API_BASE]);
-
   // 🔹 Ob zagonu aplikacije pridobi sezname iz baze
   useEffect(() => {
-    api
-      .get("/api/lists")
+    axios
+      .get(`${API_BASE}/api/lists`)
       .then((res) => setLists(res.data))
       .catch((err) => console.error("Napaka pri branju seznamov:", err));
-  }, [api]);
+  }, [API_BASE]);
 
   // 🔹 Dodaj nov seznam
   const createList = async (name) => {
     try {
-      const res = await api.post("/api/lists", { name, items: [] });
+      const res = await axios.post(`${API_BASE}/api/lists`, { name, items: [] });
       setLists([res.data, ...lists]);
     } catch (err) {
       console.error("Napaka pri ustvarjanju seznama:", err);
@@ -37,7 +34,7 @@ export default function App() {
   // 🔹 Izbriši seznam
   const deleteList = async (id) => {
     try {
-      await api.delete(`/api/lists/${id}`);
+      await axios.delete(`${API_BASE}/api/lists/${id}`);
       setLists(lists.filter((list) => list._id !== id));
       if (id === activeListId) setActiveListId(null);
     } catch (err) {
@@ -48,7 +45,7 @@ export default function App() {
   // 🔹 Preimenuj seznam
   const renameList = async (id, newName) => {
     try {
-      const res = await api.put(`/api/lists/${id}`, { name: newName });
+      const res = await axios.put(`${API_BASE}/api/lists/${id}`, { name: newName });
       setLists(lists.map((list) => (list._id === id ? res.data : list)));
     } catch (err) {
       console.error("Napaka pri preimenovanju seznama:", err);
@@ -59,9 +56,11 @@ export default function App() {
   const addItem = async (name) => {
     try {
       const current = lists.find((l) => l._id === activeListId);
+      if (!current) return;
+
       const updatedItems = [{ name, bought: false }, ...current.items];
 
-      const res = await api.put(`/api/lists/${activeListId}`, {
+      const res = await axios.put(`${API_BASE}/api/lists/${activeListId}`, {
         ...current,
         items: updatedItems,
       });
@@ -76,11 +75,13 @@ export default function App() {
   const toggleBought = async (itemId) => {
     try {
       const current = lists.find((l) => l._id === activeListId);
+      if (!current) return;
+
       const updatedItems = current.items.map((i) =>
         i._id === itemId ? { ...i, bought: !i.bought } : i
       );
 
-      const res = await api.put(`/api/lists/${activeListId}`, {
+      const res = await axios.put(`${API_BASE}/api/lists/${activeListId}`, {
         ...current,
         items: updatedItems,
       });
@@ -95,9 +96,11 @@ export default function App() {
   const deleteItem = async (itemId) => {
     try {
       const current = lists.find((l) => l._id === activeListId);
+      if (!current) return;
+
       const updatedItems = current.items.filter((i) => i._id !== itemId);
 
-      const res = await api.put(`/api/lists/${activeListId}`, {
+      const res = await axios.put(`${API_BASE}/api/lists/${activeListId}`, {
         ...current,
         items: updatedItems,
       });
