@@ -7,7 +7,13 @@ import listRoutes from "./routes/lists.js";
 dotenv.config();
 const app = express();
 
-app.use(cors());
+// Configure CORS: allow specific origin from env in production, otherwise allow all for local dev
+if (process.env.CLIENT_ORIGIN) {
+  app.use(cors({ origin: process.env.CLIENT_ORIGIN }));
+} else {
+  app.use(cors());
+}
+
 app.use(express.json());
 
 // 🔗 Povezava z MongoDB
