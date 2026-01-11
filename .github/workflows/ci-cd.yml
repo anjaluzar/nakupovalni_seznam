@@ -75,11 +75,136 @@ jobs:
           name: server_artifact
           path: server-artifact.tar.gz
 
-  docker:
-    name: Docker Build + Push (Docker Hub)
+  # ---------------- SONARCLOUD ANALYSIS ----------------
+  sonarcloud:
+    name: SonarCloud Analyze (client + server)
     runs-on: ubuntu-latest
     needs: build
 
+    steps:
+      - name: Checkout (full history for Sonar)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # cache - pospeši ponovne rune
+      - name: Cache client node_modules
+        uses: actions/cache@v4
+        with:
+          path: client/node_modules
+          key: ${{ runner.os }}-client-${{ hashFiles('client/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-client-
+
+      - name: Cache server node_modules
+        uses: actions/cache@v4
+        with:
+          path: server/node_modules
+          key: ${{ runner.os }}-server-${{ hashFiles('server/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-server-
+
+      # ---- TESTS + COVERAGE (client) ----
+      - name: Install client deps
+        working-directory: client
+        run: npm ci
+
+      - name: Test client (with coverage)
+        working-directory: client
+        run: npm test -- --coverage --watchAll=false
+
+      # ---- TESTS + COVERAGE (server) ----
+      - name: Install server deps
+        working-directory: server
+        run: npm ci
+
+      - name: Test server (with coverage)
+        working-directory: server
+        run: npm test -- --coverage
+
+      - name: Debug coverage files
+        run: |
+          echo "CLIENT COVERAGE:"
+          ls -la client/coverage || true
+          echo "SERVER COVERAGE:"
+          ls -la server/coverage || true
+
+      # ---- SONARCLOUD SCAN ----
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.projectBaseDir=.
+            -Dsonar.sources=client/src,server
+            -Dsonar.tests=client/src,server
+            -Dsonar.test.inclusions=**/*.test.*,**/*.spec.*
+            -Dsonar.exclusions=**/node_modules/**,**/build/**,**/dist/**,**/coverage/**,**/*.min.js
+            -Dsonar.javascript.lcov.reportPaths=client/coverage/lcov.info,server/coverage/lcov.info
+            -Dsonar.sourceEncoding=UTF-8
+
+  # ---------------- QUALITY GATE CHECK (API) ----------------
+  quality_gate:
+    name: SonarCloud Quality Gate (API check)
+    runs-on: ubuntu-latest
+    needs: sonarcloud
+
+    steps:
+      - name: Check Quality Gate via SonarCloud API (PR aware + retry)
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SONAR_PROJECT_KEY:-}" ]; then
+            echo "SONAR_PROJECT_KEY ni nastavljen."
+            exit 1
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            QUERY="projectKey=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}"
+            echo "Checking Quality Gate for PR #${PR_NUMBER}"
+          else
+            QUERY="projectKey=${SONAR_PROJECT_KEY}&branch=${BRANCH_NAME}"
+            echo "Checking Quality Gate for branch ${BRANCH_NAME}"
+          fi
+
+          URL="https://sonarcloud.io/api/qualitygates/project_status?${QUERY}"
+
+          for i in 1 2 3 4 5 6; do
+            RESP="$(curl -sS -u "${SONAR_TOKEN}:" "$URL")"
+            STATUS="$(echo "$RESP" | python -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])")"
+            echo "Attempt $i - Status: $STATUS"
+            echo "Response: $RESP"
+
+            if [ "$STATUS" = "OK" ]; then
+              echo "Quality Gate OK."
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          echo "Quality Gate ni OK ali status ni bil pravočasno na voljo -> prekinjam pipeline."
+          exit 1
+
+  docker:
+    name: Docker Build + Push (Docker Hub)
+    runs-on: ubuntu-latest
+    # Če želiš, da se “nadaljnje faze” ne izvajajo, ko gate ni OK:
+    needs: [build, sonarcloud, quality_gate]
     outputs:
       client_image: ${{ steps.meta.outputs.client_image }}
       server_image: ${{ steps.meta.outputs.server_image }}
@@ -165,7 +290,7 @@ jobs:
   deploy_prod:
     name: Deploy Production (Render)
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [docker, quality_gate]
     if: github.ref_name == 'production'
     environment: Production
 
